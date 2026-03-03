@@ -1,0 +1,45 @@
+services:
+  # PostgreSQL (single application DB endpoint)
+  postgres:
+    image: postgres:12-alpine
+    container_name: risk-control-postgres
+    environment:
+      POSTGRES_DB: risk_control_db
+      POSTGRES_USER: risk_control_user
+      POSTGRES_PASSWORD: risk_control_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/main/resources/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - risk-control-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U risk_control_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: risk-control-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - risk-control-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  risk-control-network:
+    driver: bridge
