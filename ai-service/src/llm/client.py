@@ -97,6 +97,7 @@ class OpenAIClient(LLMClient):
         timeout: int = 30,
         allow_mock: bool = False,
         base_url: Optional[str] = None,
+        provider_name: str = 'openai',
         max_retries: int = 0,
         rate_limit_retries: int = 2,
         rate_limit_backoff_ms: int = 800
@@ -114,6 +115,7 @@ class OpenAIClient(LLMClient):
         self.timeout = timeout
         self.allow_mock = allow_mock
         self.base_url = base_url or os.getenv('LLM_BASE_URL')
+        self.provider = (provider_name or 'openai').lower()
         self.max_retries = max(0, max_retries)
         self.rate_limit_retries = max(0, rate_limit_retries)
         self.rate_limit_backoff_ms = max(100, rate_limit_backoff_ms)
@@ -146,15 +148,13 @@ class OpenAIClient(LLMClient):
                 raise RuntimeError("OpenAI client unavailable and mock mode disabled")
             return self._mock_response(prompt)
 
-        request_kwargs = {
-            'model': self.model,
-            'messages': [{"role": "user", "content": prompt}],
-            'temperature': kwargs.get('temperature', 0.7),
-            'max_tokens': kwargs.get('max_tokens', 1000)
-        }
-        response_format = kwargs.get('response_format') or os.getenv('LLM_RESPONSE_FORMAT', 'json_object')
-        if response_format == 'json_object':
-            request_kwargs['response_format'] = {'type': 'json_object'}
+        request_kwargs = self._build_request_kwargs(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=kwargs.get('temperature', 0.7),
+            max_tokens=kwargs.get('max_tokens', 1000),
+            response_format=kwargs.get('response_format'),
+            extra_body=kwargs.get('extra_body')
+        )
         return self._request_with_rate_limit_retry(request_kwargs)
     
     def generate_with_context(self, system_prompt: str, user_prompt: str, **kwargs) -> str:
@@ -164,19 +164,63 @@ class OpenAIClient(LLMClient):
                 raise RuntimeError("OpenAI client unavailable and mock mode disabled")
             return self._mock_response(user_prompt)
 
-        request_kwargs = {
-            'model': self.model,
-            'messages': [
+        request_kwargs = self._build_request_kwargs(
+            messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            'temperature': kwargs.get('temperature', 0.7),
-            'max_tokens': kwargs.get('max_tokens', 1000)
-        }
-        response_format = kwargs.get('response_format') or os.getenv('LLM_RESPONSE_FORMAT', 'json_object')
-        if response_format == 'json_object':
-            request_kwargs['response_format'] = {'type': 'json_object'}
+            temperature=kwargs.get('temperature', 0.7),
+            max_tokens=kwargs.get('max_tokens', 1000),
+            response_format=kwargs.get('response_format'),
+            extra_body=kwargs.get('extra_body')
+        )
         return self._request_with_rate_limit_retry(request_kwargs)
+
+    def _build_request_kwargs(
+        self,
+        messages: list,
+        temperature: float,
+        max_tokens: int,
+        response_format: Optional[str] = None,
+        extra_body: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        request_kwargs: Dict[str, Any] = {
+            'model': self.model,
+            'messages': messages,
+            'temperature': temperature,
+            'max_tokens': max_tokens
+        }
+
+        resolved_response_format = response_format or os.getenv('LLM_RESPONSE_FORMAT', 'json_object')
+        if resolved_response_format == 'json_object':
+            request_kwargs['response_format'] = {'type': 'json_object'}
+
+        merged_extra_body = self._merge_extra_body(extra_body or {}, self._provider_extra_body())
+        if merged_extra_body:
+            request_kwargs['extra_body'] = merged_extra_body
+
+        return request_kwargs
+
+    def _provider_extra_body(self) -> Dict[str, Any]:
+        extra_body: Dict[str, Any] = {}
+
+        if self.provider == 'bigmodel':
+            thinking_type = os.getenv('BIGMODEL_THINKING_TYPE', 'disabled').strip().lower()
+            if thinking_type:
+                extra_body['thinking'] = {'type': thinking_type}
+
+        return extra_body
+
+    def _merge_extra_body(self, base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
+        merged = dict(base)
+        for key, value in extra.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                nested = dict(merged[key])
+                nested.update(value)
+                merged[key] = nested
+            else:
+                merged[key] = value
+        return merged
 
     def _request_with_rate_limit_retry(self, request_kwargs: Dict[str, Any]) -> str:
         attempts = self.rate_limit_retries + 1
@@ -376,6 +420,7 @@ def get_default_llm_client() -> LLMClient:
         }
         if provider in OPENAI_COMPATIBLE_PROVIDERS:
             client_kwargs['base_url'] = base_url
+            client_kwargs['provider_name'] = provider
             client_kwargs['max_retries'] = max_retries
             client_kwargs['rate_limit_retries'] = rate_limit_retries
             client_kwargs['rate_limit_backoff_ms'] = rate_limit_backoff_ms

@@ -83,7 +83,7 @@ class AgentAnalysisQualityTest(unittest.TestCase):
             "triggered_rules": ["RULE_HIGH_DEVICE_RISK", "RULE_NEW_USER"],
         }
 
-    @patch.dict(os.environ, {"AI_DECISION_MODE": "llm_only", "AI_FAIL_FAST": "false"}, clear=False)
+    @patch.dict(os.environ, {"AI_DECISION_MODE": "llm_only", "AI_FAIL_FAST": "false", "AI_ALLOW_EVIDENCE_FALLBACK": "true"}, clear=False)
     def test_non_json_output_is_repaired_to_evidence_based_analysis(self):
         agent = AIAgent(NonJsonLLM(), DummyPromptManager(), DummyRetriever())
         result = agent.analyze_case(self._build_case_data())
@@ -95,7 +95,7 @@ class AgentAnalysisQualityTest(unittest.TestCase):
         similar_cases_analysis = result.get("similar_cases_analysis", "")
         self.assertTrue(any(k in similar_cases_analysis for k in ["similar cases", "相似案例", "鐩镐技妗堜欢"]))
 
-    @patch.dict(os.environ, {"AI_DECISION_MODE": "llm_only", "AI_FAIL_FAST": "false"}, clear=False)
+    @patch.dict(os.environ, {"AI_DECISION_MODE": "llm_only", "AI_FAIL_FAST": "false", "AI_ALLOW_EVIDENCE_FALLBACK": "true"}, clear=False)
     def test_generic_json_is_enriched_with_concrete_evidence(self):
         agent = AIAgent(GenericJsonLLM(), DummyPromptManager(), DummyRetriever())
         result = agent.analyze_case(self._build_case_data())

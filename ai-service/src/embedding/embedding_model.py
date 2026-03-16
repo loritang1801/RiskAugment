@@ -4,7 +4,9 @@ Uses BAAI/bge-large-zh-v1.5 for Chinese text embedding.
 """
 
 import logging
-from typing import List, Union
+import os
+from pathlib import Path
+from typing import List, Optional, Tuple, Union
 import math
 import random
 
@@ -14,6 +16,40 @@ except ImportError:
     np = None
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_hf_cached_snapshot(model_name: str) -> Optional[Path]:
+    """Resolve a Hugging Face cached snapshot directory for a repo id."""
+    if not model_name or '/' not in model_name:
+        return None
+
+    cache_root = os.getenv('HUGGINGFACE_HUB_CACHE')
+    if cache_root:
+        hub_root = Path(cache_root)
+    else:
+        hf_home = os.getenv('HF_HOME')
+        hub_root = Path(hf_home) / 'hub' if hf_home else Path.home() / '.cache' / 'huggingface' / 'hub'
+
+    repo_dir = hub_root / f"models--{model_name.replace('/', '--')}"
+    if not repo_dir.exists():
+        return None
+
+    ref_file = repo_dir / 'refs' / 'main'
+    if ref_file.exists():
+        snapshot_dir = repo_dir / 'snapshots' / ref_file.read_text(encoding='utf-8').strip()
+        if snapshot_dir.exists():
+            return snapshot_dir
+
+    snapshots_dir = repo_dir / 'snapshots'
+    if not snapshots_dir.exists():
+        return None
+
+    candidates = sorted(
+        [path for path in snapshots_dir.iterdir() if path.is_dir()],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True
+    )
+    return candidates[0] if candidates else None
 
 
 class EmbeddingModel:
@@ -30,6 +66,8 @@ class EmbeddingModel:
         self.model_name = model_name
         self.dimension = dimension
         self.model = None
+        self.model_source = model_name
+        self.local_files_only = False
         self._initialize_model()
     
     def _initialize_model(self):
@@ -37,13 +75,35 @@ class EmbeddingModel:
         try:
             # Try to import sentence-transformers
             from sentence_transformers import SentenceTransformer
-            
-            logger.info(f"Loading embedding model: {self.model_name}")
-            self.model = SentenceTransformer(self.model_name)
+
+            model_source, local_files_only = self._resolve_model_source()
+            self.model_source = model_source
+            self.local_files_only = local_files_only
+            logger.info(
+                "Loading embedding model: requested=%s source=%s local_files_only=%s",
+                self.model_name,
+                self.model_source,
+                self.local_files_only
+            )
+            self.model = SentenceTransformer(self.model_source, local_files_only=self.local_files_only)
             logger.info(f"Model loaded successfully. Dimension: {self.dimension}")
-        except ImportError:
-            logger.warning("sentence-transformers not installed. Using mock embeddings.")
-            self.model = None
+        except ImportError as e:
+            raise RuntimeError("sentence-transformers is not installed") from e
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to initialize embedding model '{self.model_name}' from '{self.model_source}': {e}"
+            ) from e
+
+    def _resolve_model_source(self) -> Tuple[str, bool]:
+        configured_path = Path(self.model_name).expanduser()
+        if configured_path.exists():
+            return str(configured_path), True
+
+        cached_snapshot = resolve_hf_cached_snapshot(self.model_name)
+        if cached_snapshot is not None:
+            return str(cached_snapshot), True
+
+        return self.model_name, False
     
     def embed_text(self, text: str) -> List[float]:
         """
@@ -56,8 +116,7 @@ class EmbeddingModel:
             Embedding vector as list of floats
         """
         if self.model is None:
-            # Return mock embedding for testing
-            return self._mock_embedding(text)
+            raise RuntimeError("Embedding model is not initialized")
         
         try:
             # Encode text to embedding
@@ -83,8 +142,7 @@ class EmbeddingModel:
             List of embedding vectors
         """
         if self.model is None:
-            # Return mock embeddings for testing
-            return [self._mock_embedding(text) for text in texts]
+            raise RuntimeError("Embedding model is not initialized")
         
         try:
             # Encode texts to embeddings

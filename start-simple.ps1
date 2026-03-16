@@ -30,6 +30,25 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logsDir = Join-Path $root "logs"
 $frontendDir = Join-Path $root "frontend"
 $aiDir = Join-Path $root "ai-service"
+$aiVenvPython = Join-Path $aiDir ".venv\Scripts\python.exe"
+$aiPythonCommand = "python"
+
+if (Test-Path $aiVenvPython) {
+    $venvReady = $false
+    try {
+        & $aiVenvPython -c "import flask, requests" *> $null
+        $venvReady = ($LASTEXITCODE -eq 0)
+    } catch {
+        $venvReady = $false
+    }
+
+    if ($venvReady) {
+        $aiPythonCommand = "& '$aiVenvPython'"
+        Write-Info "Using ai-service virtualenv Python."
+    } else {
+        Write-WarnMsg "ai-service virtualenv is missing required packages. Falling back to system Python."
+    }
+}
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
@@ -75,7 +94,8 @@ if (Is-PortListening 5000) {
 } else {
     Write-Info "Starting AI service..."
     $aiLog = Join-Path $logsDir "ai.out.log"
-    $p = Start-BackgroundPowerShell $aiDir "python app.py" $aiLog
+    $aiCommand = "$aiPythonCommand app.py"
+    $p = Start-BackgroundPowerShell $aiDir $aiCommand $aiLog
     $started["ai-service"] = $p.Id
     Write-Ok "AI service start command sent (PID=$($p.Id))."
 }

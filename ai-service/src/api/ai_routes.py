@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 ai_bp = Blueprint('ai', __name__, url_prefix='/api/ai')
 ANALYZE_EVENTS = deque(maxlen=500)
 ANALYZE_TIMEOUT_SECONDS = int(os.getenv('ANALYZE_TIMEOUT_SECONDS', '90'))
+AI_ALLOW_DEGRADED_RESPONSE = os.getenv('AI_ALLOW_DEGRADED_RESPONSE', 'false').lower() == 'true'
 
 
 def _percentile(values, p):
@@ -235,7 +236,6 @@ def analyze_case():
         logger.error(f"Error analyzing case: {str(e)}")
         trace_id = trace_id if 'trace_id' in locals() else str(uuid.uuid4())
         error_message = str(e)
-        degraded_analysis = _build_degraded_analysis(trace_id, error_message, case_data=(data.get('case_data') if 'data' in locals() and isinstance(data, dict) else None))
         category = _classify_error(error_message)
         ANALYZE_EVENTS.append({
             "timestamp": int(time.time()),
@@ -244,6 +244,21 @@ def analyze_case():
             "latency_ms": 0,
             "error_category": category
         })
+        if not AI_ALLOW_DEGRADED_RESPONSE:
+            response = jsonify({
+                'status': 'error',
+                'message': error_message,
+                'trace_id': trace_id,
+                'error_category': category
+            })
+            response.headers['X-Trace-Id'] = trace_id
+            return response, 504 if category == 'timeout' else 502
+
+        degraded_analysis = _build_degraded_analysis(
+            trace_id,
+            error_message,
+            case_data=(data.get('case_data') if 'data' in locals() and isinstance(data, dict) else None)
+        )
         degraded_analysis['metadata']['error_category'] = category
         response = jsonify({
             'status': 'success',

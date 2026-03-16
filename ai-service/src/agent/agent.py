@@ -34,6 +34,7 @@ class AIAgent:
         decision_mode = os.getenv('AI_DECISION_MODE', 'llm_only').lower()
         self.decision_mode = decision_mode if decision_mode in {'llm_only', 'hybrid'} else 'llm_only'
         self.fail_fast = os.getenv('AI_FAIL_FAST', 'true').lower() == 'true'
+        self.allow_evidence_fallback = os.getenv('AI_ALLOW_EVIDENCE_FALLBACK', 'false').lower() == 'true'
         self.similar_top_k = int(os.getenv('AGENT_SIMILAR_TOP_K', '2'))
         self.llm_temperature = float(os.getenv('AGENT_LLM_TEMPERATURE', '0.2'))
         self.llm_max_tokens = int(os.getenv('AGENT_LLM_MAX_TOKENS', '1200'))
@@ -188,18 +189,21 @@ class AIAgent:
                 "key_risk_points must include 3-4 concrete evidence items; reasoning must contain 4-6 sentences.\n\n"
                 f"case_context={compact_context}"
             )
+            request_max_tokens = self._get_llm_request_max_tokens()
 
             # Call LLM with hard JSON preference to improve parse stability.
             llm_response = self.llm_client.generate_with_context(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=0.0,
-                max_tokens=min(self.llm_max_tokens, 700),
+                max_tokens=request_max_tokens,
                 response_format='json_object'
             )
             
             # Parse response
             analysis = self._parse_llm_response(llm_response)
+            if not self.allow_evidence_fallback and str(analysis.get('_response_path')) == 'evidence_fallback':
+                raise RuntimeError('LLM returned non-JSON output')
             if str(analysis.get('_response_path')) == 'evidence_fallback':
                 retry_prompt = (
                     "Previous output failed strict parsing. Regenerate and return ONLY valid JSON with the same keys.\n\n"
@@ -209,7 +213,7 @@ class AIAgent:
                     system_prompt=system_prompt,
                     user_prompt=retry_prompt,
                     temperature=0.0,
-                    max_tokens=min(self.llm_max_tokens, 700),
+                    max_tokens=request_max_tokens,
                     response_format='json_object'
                 )
                 retry_analysis = self._parse_llm_response(retry_response)
@@ -234,6 +238,8 @@ class AIAgent:
             details = analysis.get('similar_cases_details')
             if not isinstance(details, list) or not details:
                 analysis['similar_cases_details'] = self._build_similar_cases_details(similar_cases)
+            if not self.allow_evidence_fallback and str(analysis.get('_response_path')) == 'evidence_fallback':
+                raise RuntimeError('LLM output did not pass structured validation')
             
             # Add metadata
             response_path = str(analysis.pop('_response_path', 'llm_structured'))
@@ -257,6 +263,14 @@ class AIAgent:
             if self.fail_fast:
                 raise
             return self._get_default_analysis()
+
+    def _get_llm_request_max_tokens(self) -> int:
+        provider = os.getenv('LLM_PROVIDER', 'openai').lower()
+        model = os.getenv('LLM_MODEL', '')
+        max_tokens = self.llm_max_tokens
+        if provider == 'bigmodel' and model.startswith('glm-4.6'):
+            max_tokens = max(max_tokens, 1024)
+        return max_tokens
 
     def _post_process_analysis(
         self,
