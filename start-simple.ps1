@@ -36,7 +36,7 @@ $aiPythonCommand = "python"
 if (Test-Path $aiVenvPython) {
     $venvReady = $false
     try {
-        & $aiVenvPython -c "import flask, requests" *> $null
+        & $aiVenvPython -c "import flask, flask_cors, flask_sqlalchemy, requests, openai, sentence_transformers, psycopg2" *> $null
         $venvReady = ($LASTEXITCODE -eq 0)
     } catch {
         $venvReady = $false
